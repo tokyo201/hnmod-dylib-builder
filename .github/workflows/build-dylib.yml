@@ -136,6 +136,22 @@ jobs:
           zip -r ../horizon-dylib-mods-arm64.zip *.dylib || echo "No dylibs found"
           cd ..
 
+      - name: Publish to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Publishing compiled dylibs to GitHub Release 'compiled-mods'..."
+          gh release create compiled-mods --title "Compiled Mods Cache" --notes "Automated precompiled iOS arm64 dylib mod binaries for Horizon Rust." 2>/dev/null || true
+          for dylib in artifacts/*.dylib; do
+            [ -f "$dylib" ] || continue
+            name=$(basename "$dylib" .dylib)
+            zip -j "artifacts/${name}.zip" "$dylib"
+            gh release upload compiled-mods "$dylib" "artifacts/${name}.zip" --clobber || true
+          done
+          if [ -f horizon-dylib-mods-arm64.zip ]; then
+            gh release upload compiled-mods horizon-dylib-mods-arm64.zip --clobber || true
+          fi
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
