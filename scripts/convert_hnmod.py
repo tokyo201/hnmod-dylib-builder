@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import zipfile
+import tarfile
 import shutil
 import argparse
 import subprocess
@@ -57,7 +58,7 @@ pub extern "C" fn horizon_mod_version() -> *const c_char {{
 
 #[no_mangle]
 pub extern "C" fn horizon_mod_init() -> c_int {{
-    println!("[HorizonMod:{}] Dynamic library initialized successfully for iOS arm64.", MOD_ID);
+    println!("[HorizonMod:{{}}] Dynamic library initialized successfully for iOS arm64.", MOD_ID);
     0
 }}
 
@@ -79,16 +80,27 @@ C_CONSTRUCTOR_TEMPLATE = """// Companion constructor bridge for Mach-O dyld load
 extern int horizon_mod_init(void);
 
 __attribute__((constructor))
-static void horizon_dylib_auto_init(void) {
+static void horizon_dylib_auto_init(void) {{
     printf("[HorizonDylib] Loading {mod_id} (v{version}) into Horizon Rust\\n");
     horizon_mod_init();
-}
+}}
 """
 
 def extract_hnmod(hnmod_path, extract_dir):
-    """Unpacks .hnmod zip archive and extracts metadata."""
-    with zipfile.ZipFile(hnmod_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_dir)
+    """Unpacks .hnmod archive (tar or zip) and extracts metadata."""
+    if tarfile.is_tarfile(hnmod_path):
+        with tarfile.open(hnmod_path, 'r:*') as tar_ref:
+            tar_ref.extractall(extract_dir)
+    elif zipfile.is_zipfile(hnmod_path):
+        with zipfile.ZipFile(hnmod_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+    else:
+        try:
+            with tarfile.open(hnmod_path, 'r:*') as tar_ref:
+                tar_ref.extractall(extract_dir)
+        except Exception:
+            with zipfile.ZipFile(hnmod_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
 
     native_json_path = os.path.join(extract_dir, "horizon-native.json")
     metadata = {}
