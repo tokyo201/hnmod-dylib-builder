@@ -1,0 +1,7 @@
+# Ignore built artifacts and temporaries
+artifacts/*.dylib
+artifacts/*.zip
+*.zip
+_build_tmp/
+target/
+.DS_Store
