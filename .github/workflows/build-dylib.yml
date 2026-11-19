@@ -5,11 +5,37 @@ on:
     branches: [ "main", "master" ]
     paths:
       - "mods/**"
+      - "staging/**"
       - "scripts/**"
       - ".github/workflows/**"
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      mod_hash:
+        description: 'SHA-256 hash of the .hnmod package'
+        required: false
+        type: string
+      mod_id:
+        description: 'Mod identifier'
+        required: false
+        type: string
+      mod_version:
+        description: 'Mod version'
+        required: false
+        default: '1.0.0'
+        type: string
+      staging_key:
+        description: 'R2 staging key for on-demand build'
+        required: false
+        type: string
+      callback_origin:
+        description: 'Callback origin URL for uploading compiled artifact'
+        required: false
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
   build-dylibs:
@@ -17,6 +43,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -31,10 +59,76 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Build All hnmods to iOS arm64 dylib
+      - name: Build On-Demand Mod or All Mods
+        id: build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMPILER_SECRET: ${{ secrets.COMPILER_SHARED_SECRET }}
         run: |
-          chmod +x scripts/build_all_mods.sh
-          ./scripts/build_all_mods.sh
+          mkdir -p artifacts staging
+          MOD_HASH="${{ inputs.mod_hash }}"
+          MOD_ID="${{ inputs.mod_id }}"
+          MOD_VER="${{ inputs.mod_version }}"
+          CALLBACK="${{ inputs.callback_origin }}"
+          
+          if [ -n "$MOD_HASH" ]; then
+            echo "=== Building On-Demand Mod: hash=$MOD_HASH, id=$MOD_ID ==="
+            TARGET_FILE=""
+            
+            # Check staging/ or mods/
+            if [ -f "staging/${MOD_HASH}.hnmod" ]; then
+              TARGET_FILE="staging/${MOD_HASH}.hnmod"
+            elif [ -f "mods/${MOD_ID}.hnmod" ]; then
+              TARGET_FILE="mods/${MOD_ID}.hnmod"
+            else
+              FOUND=$(find staging mods -name "*${MOD_HASH}*" -o -name "*${MOD_ID}*.hnmod" 2>/dev/null | head -n 1)
+              if [ -n "$FOUND" ]; then
+                TARGET_FILE="$FOUND"
+              fi
+            fi
+            
+            if [ -z "$TARGET_FILE" ] && [ -n "$CALLBACK" ]; then
+              echo "Downloading staged mod from Cloudflare Worker: $CALLBACK"
+              curl -sL -f "${CALLBACK}/api/v1/mods/download/${MOD_HASH}" -o "staging/${MOD_HASH}.hnmod" || true
+              if [ -f "staging/${MOD_HASH}.hnmod" ]; then
+                TARGET_FILE="staging/${MOD_HASH}.hnmod"
+              fi
+            fi
+            
+            if [ -n "$TARGET_FILE" ] && [ -f "$TARGET_FILE" ]; then
+              python3 scripts/convert_hnmod.py "$TARGET_FILE" --output-dir artifacts
+              
+              # Package compiled zip for release and edge cache
+              ZIP_NAME="${MOD_HASH}.zip"
+              cd artifacts
+              zip -r "../${ZIP_NAME}" *.dylib
+              cd ..
+              
+              # 1. Publish to GitHub Releases "compiled-mods"
+              echo "Publishing to GitHub Release 'compiled-mods'..."
+              gh release create compiled-mods --title "Compiled Mods Cache" --notes "Automated precompiled iOS arm64 dylib mod binaries." 2>/dev/null || true
+              gh release upload compiled-mods "${ZIP_NAME}" --clobber || echo "Failed to upload to release"
+              
+              # 2. Notify Cloudflare Worker if callback configured
+              if [ -n "$CALLBACK" ] && [ -n "$COMPILER_SECRET" ]; then
+                echo "Uploading compiled artifact to Cloudflare Worker edge cache..."
+                curl -X POST "${CALLBACK}/api/v1/internal/upload-compiled" \
+                  -H "X-Compiler-Secret: ${COMPILER_SECRET}" \
+                  -H "X-Mod-Hash: ${MOD_HASH}" \
+                  -H "X-Mod-Id: ${MOD_ID}" \
+                  -H "X-Mod-Version: ${MOD_VER}" \
+                  -H "Content-Type: application/zip" \
+                  --data-binary "@${ZIP_NAME}" || echo "Worker callback failed"
+              fi
+            else
+              echo "Error: Target mod bundle not found for hash $MOD_HASH"
+              exit 1
+            fi
+          else
+            echo "=== Building All Repositories Mods ==="
+            chmod +x scripts/build_all_mods.sh
+            ./scripts/build_all_mods.sh
+          fi
 
       - name: Archive Dylibs
         run: |
@@ -48,5 +142,5 @@ jobs:
           name: horizon-dylib-mods-arm64
           path: |
             artifacts/*.dylib
-            horizon-dylib-mods-arm64.zip
+            *.zip
           if-no-files-found: warn
