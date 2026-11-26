@@ -96,7 +96,7 @@ jobs:
             fi
             
             if [ -n "$TARGET_FILE" ] && [ -f "$TARGET_FILE" ]; then
-              python3 scripts/convert_hnmod.py "$TARGET_FILE" --output-dir artifacts
+              python3 scripts/convert_hnmod.py --input "$TARGET_FILE" --output artifacts
               
               # Package compiled zip for release and edge cache
               ZIP_NAME="${MOD_HASH}.zip"
